@@ -2006,6 +2006,42 @@ if __name__ == "__main__":
         flush=True,
     )
 
+    # --------------------------------------------------------
+    # PRELOAD DINOv2 + FAISS
+    # This prevents the first user's search from waiting
+    # for the Hugging Face model to download/load.
+    # --------------------------------------------------------
+
+    print(
+        ">>> TAILORTALK: preloading DINOv2 + FAISS...",
+        flush=True,
+    )
+
+    try:
+        load_resources()
+
+        print(
+            ">>> TAILORTALK: DINOv2 + FAISS preloaded successfully",
+            flush=True,
+        )
+
+    except Exception as exc:
+
+        print(
+            f">>> TAILORTALK: preload failed: {exc}",
+            flush=True,
+        )
+
+        print(
+            ">>> TAILORTALK: resources will be loaded on first search",
+            flush=True,
+        )
+
+    print(
+        ">>> TAILORTALK: launching Gradio...",
+        flush=True,
+    )
+
     demo.launch(
         server_name="0.0.0.0",
         server_port=port,
