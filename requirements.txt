@@ -1,9 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 gradio
 numpy
 pandas
 Pillow
 faiss-cpu
-torch
+torch==2.7.1+cpu
 transformers
 langchain-core
 langchain-google-genai

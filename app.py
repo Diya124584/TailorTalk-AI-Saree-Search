@@ -82,13 +82,6 @@ print(
 # 4. CREATE IMAGE -> CATALOGUE MAPPING
 # ============================================================
 
-# Images were downloaded using the original catalogue
-# row index:
-#
-# catalogue row 0 -> 0.jpg
-# catalogue row 1 -> 1.jpg
-# catalogue row 10 -> 10.jpg
-
 saree_df["image_file"] = (
     saree_df.index.astype(str) + ".jpg"
 )
@@ -156,43 +149,65 @@ print(
 
 
 # ============================================================
-# 8. LOAD DINOv2
+# 8. DINOv2 CONFIGURATION
+#
+# IMPORTANT:
+# DINOv2 is loaded lazily.
+# This prevents Render from waiting for the model
+# before the web server opens its port.
 # ============================================================
 
 MODEL_NAME = "facebook/dinov2-small"
 
-device = torch.device(
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
+# Render Free does not provide a GPU.
+# Force CPU for deployment.
+device = torch.device("cpu")
 
-print(
-    "Loading DINOv2 on:",
-    device
-)
+image_processor = None
+visual_model = None
 
-image_processor = AutoImageProcessor.from_pretrained(
-    MODEL_NAME
-)
 
-visual_model = AutoModel.from_pretrained(
-    MODEL_NAME
-)
+def load_dinov2():
 
-visual_model = visual_model.to(
-    device
-)
+    global image_processor
+    global visual_model
 
-visual_model.eval()
+    # Already loaded
+    if (
+        image_processor is not None
+        and visual_model is not None
+    ):
+        return
 
-print(
-    "DINOv2 loaded successfully!"
-)
+    print(
+        "Loading DINOv2..."
+    )
+
+    image_processor = (
+        AutoImageProcessor.from_pretrained(
+            MODEL_NAME
+        )
+    )
+
+    visual_model = (
+        AutoModel.from_pretrained(
+            MODEL_NAME
+        )
+    )
+
+    visual_model = visual_model.to(
+        device
+    )
+
+    visual_model.eval()
+
+    print(
+        "DINOv2 loaded successfully!"
+    )
 
 
 # ============================================================
-# 9. DINOv2 EMBEDDING FUNCTION
+# 9. DINOv2 EMBEDDING FUNCTIONS
 # ============================================================
 
 def normalize_vector(vector):
@@ -213,6 +228,9 @@ def normalize_vector(vector):
 
 
 def get_dino_embedding(image):
+
+    # Load DINOv2 only when actually needed
+    load_dinov2()
 
     inputs = image_processor(
         images=image.convert("RGB"),
@@ -250,56 +268,65 @@ def get_dino_embedding(image):
 
 
 # ============================================================
-# 10. LOAD FAISS INDEX
+# 10. FAISS CONFIGURATION
+#
+# FAISS is also loaded lazily.
 # ============================================================
 
-print(
-    "Loading DINOv2 FAISS index..."
-)
+index = None
 
-index = faiss.read_index(
-    str(FAISS_INDEX_FILE)
-)
 
-print(
-    "FAISS vectors:",
-    index.ntotal
-)
+def load_faiss():
 
-print(
-    "FAISS dimension:",
-    index.d
-)
+    global index
+
+    if index is not None:
+        return
+
+    print(
+        "Loading DINOv2 FAISS index..."
+    )
+
+    index = faiss.read_index(
+        str(FAISS_INDEX_FILE)
+    )
+
+    print(
+        "FAISS vectors:",
+        index.ntotal
+    )
+
+    print(
+        "FAISS dimension:",
+        index.d
+    )
+
+    # --------------------------------------------------------
+    # Validate FAISS + catalogue
+    # --------------------------------------------------------
+
+    assert (
+        index.ntotal
+        == len(search_catalogue)
+    ), (
+        "FAISS index and searchable catalogue "
+        "are misaligned!\n"
+        f"FAISS vectors: {index.ntotal}\n"
+        f"Catalogue rows: {len(search_catalogue)}"
+    )
+
+    assert index.d == 384, (
+        f"Expected DINOv2 dimension 384, "
+        f"got {index.d}"
+    )
+
+    print(
+        "FAISS index and catalogue are aligned!"
+    )
 
 
 # ============================================================
-# 11. VALIDATE FAISS + METADATA
-# ============================================================
-
-assert (
-    index.ntotal
-    == len(search_catalogue)
-), (
-    "FAISS index and searchable catalogue "
-    "are misaligned!\n"
-    f"FAISS vectors: {index.ntotal}\n"
-    f"Catalogue rows: {len(search_catalogue)}"
-)
-
-
-assert index.d == 384, (
-    f"Expected DINOv2 dimension 384, "
-    f"got {index.d}"
-)
-
-
-print(
-    "FAISS index and catalogue are aligned!"
-)
-
-
-# ============================================================
-# 12. LANGCHAIN VISUAL SEARCH TOOL
+# 11. LANGCHAIN VISUAL SEARCH TOOL
 # ============================================================
 
 @tool
@@ -310,33 +337,44 @@ def search_similar_sarees(
     """
     Find visually similar sarees from the catalogue.
 
-    The FAISS index uses normalized DINOv2 structural/
-    grayscale embeddings.
+    The FAISS index uses normalized DINOv2
+    structural/grayscale embeddings.
 
     Returns unique in-stock products.
     """
+
+    # Load resources only when searching
+    load_faiss()
+    load_dinov2()
 
     # --------------------------------------------------------
     # Validate top_k
     # --------------------------------------------------------
 
     try:
-        top_k = int(top_k)
+
+        top_k = int(
+            top_k
+        )
 
     except Exception:
+
         top_k = 5
 
     top_k = max(
         1,
-        min(top_k, 10)
+        min(
+            top_k,
+            10
+        )
     )
-
 
     # --------------------------------------------------------
     # Validate image path
     # --------------------------------------------------------
 
     if not image_path:
+
         raise ValueError(
             "No image path was provided."
         )
@@ -346,28 +384,27 @@ def search_similar_sarees(
     )
 
     if not image_path.exists():
+
         raise FileNotFoundError(
             f"Image not found: {image_path}"
         )
 
-
     # --------------------------------------------------------
-    # Load image
+    # Load query image
     # --------------------------------------------------------
 
     query_image = Image.open(
         image_path
     ).convert("RGB")
 
-
     # --------------------------------------------------------
     # IMPORTANT:
     #
-    # The current FAISS index was created using
-    # structure_embeddings.
+    # The FAISS index was created using
+    # grayscale/structural DINOv2 embeddings.
     #
-    # Therefore the query MUST also use the
-    # grayscale DINOv2 representation.
+    # Therefore the query must use the same
+    # representation.
     # --------------------------------------------------------
 
     grayscale_image = (
@@ -376,11 +413,11 @@ def search_similar_sarees(
         .convert("RGB")
     )
 
-
-    query_embedding = get_dino_embedding(
-        grayscale_image
+    query_embedding = (
+        get_dino_embedding(
+            grayscale_image
+        )
     )
-
 
     # --------------------------------------------------------
     # FAISS shape
@@ -394,7 +431,6 @@ def search_similar_sarees(
         -1
     )
 
-
     # --------------------------------------------------------
     # Normalize
     #
@@ -406,14 +442,13 @@ def search_similar_sarees(
         query_embedding
     )
 
-
     # --------------------------------------------------------
     # Search extra candidates
     #
-    # We need extra results because:
+    # Extra candidates are required because:
     #
-    # - some products are out of stock
-    # - duplicate SKUs can exist
+    # - some products may be out of stock
+    # - duplicate SKUs may exist
     # --------------------------------------------------------
 
     search_k = min(
@@ -424,12 +459,10 @@ def search_similar_sarees(
         index.ntotal
     )
 
-
     scores, indices = index.search(
         query_embedding,
         search_k
     )
-
 
     # ========================================================
     # BUILD RESULTS
@@ -438,7 +471,6 @@ def search_similar_sarees(
     results = []
 
     seen_skus = set()
-
 
     for score, idx in zip(
         scores[0],
@@ -451,7 +483,6 @@ def search_similar_sarees(
         if idx >= len(search_catalogue):
             continue
 
-
         # ----------------------------------------------------
         # Get catalogue row
         # ----------------------------------------------------
@@ -460,7 +491,6 @@ def search_similar_sarees(
             int(idx)
         ]
 
-
         # ----------------------------------------------------
         # SKU
         # ----------------------------------------------------
@@ -468,7 +498,6 @@ def search_similar_sarees(
         sku = str(
             row["SKU"]
         )
-
 
         # ----------------------------------------------------
         # Stock
@@ -486,14 +515,12 @@ def search_similar_sarees(
 
             stock = 0
 
-
         # ----------------------------------------------------
         # Only return in-stock products
         # ----------------------------------------------------
 
         if stock <= 0:
             continue
-
 
         # ----------------------------------------------------
         # Remove duplicate SKUs
@@ -506,9 +533,8 @@ def search_similar_sarees(
             sku
         )
 
-
         # ----------------------------------------------------
-        # Prices
+        # Retail price
         # ----------------------------------------------------
 
         try:
@@ -521,6 +547,9 @@ def search_similar_sarees(
 
             retail_price = 0.0
 
+        # ----------------------------------------------------
+        # Discounted price
+        # ----------------------------------------------------
 
         try:
 
@@ -532,6 +561,13 @@ def search_similar_sarees(
 
             discounted_price = 0.0
 
+        # ----------------------------------------------------
+        # Website link
+        # ----------------------------------------------------
+
+        website_link = str(
+            row["Website Link"]
+        )
 
         # ----------------------------------------------------
         # Store result
@@ -559,15 +595,11 @@ def search_similar_sarees(
 
             "stock": stock,
 
-            "website_link": str(
-                row["Website Link"]
-            )
+            "website_link": website_link
         })
-
 
         if len(results) >= top_k:
             break
-
 
     return results
 
@@ -578,7 +610,7 @@ print(
 
 
 # ============================================================
-# 13. FORMAT SEARCH RESULTS
+# 12. FORMAT SEARCH RESULTS
 # ============================================================
 
 def format_results(results):
@@ -590,11 +622,9 @@ def format_results(results):
             "Try another image."
         )
 
-
     output = [
         "## 👗 TailorTalk Search Results\n"
     ]
-
 
     for i, result in enumerate(
         results,
@@ -616,24 +646,52 @@ def format_results(results):
 """
         )
 
-
     return "\n".join(
         output
     )
 
 
 # ============================================================
-# 14. GEMINI AGENT
+# 13. LAZY GEMINI AGENT
+#
+# Gemini is initialized only when a user performs a search.
 # ============================================================
 
 agent = None
-
-gemini_api_key = os.getenv(
-    "GEMINI_API_KEY"
-)
+gemini_initialized = False
 
 
-if gemini_api_key:
+def get_gemini_agent():
+
+    global agent
+    global gemini_initialized
+
+    # Don't initialize repeatedly
+    if gemini_initialized:
+
+        return agent
+
+    gemini_initialized = True
+
+    # --------------------------------------------------------
+    # Read API key from environment
+    # --------------------------------------------------------
+
+    gemini_api_key = os.getenv(
+        "GEMINI_API_KEY"
+    )
+
+    if not gemini_api_key:
+
+        print(
+            "GEMINI_API_KEY not configured."
+        )
+
+        print(
+            "Using direct visual search fallback."
+        )
+
+        return None
 
     try:
 
@@ -641,12 +699,11 @@ if gemini_api_key:
             "Initializing Gemini agent..."
         )
 
-
         llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash",
-            temperature=0
+            temperature=0,
+            google_api_key=gemini_api_key
         )
-
 
         agent = create_agent(
             model=llm,
@@ -698,11 +755,11 @@ without calling the visual search tool.
 """
         )
 
-
         print(
             "TailorTalk Gemini agent initialized!"
         )
 
+        return agent
 
     except Exception as e:
 
@@ -716,19 +773,11 @@ without calling the visual search tool.
 
         agent = None
 
-else:
-
-    print(
-        "GEMINI_API_KEY not configured."
-    )
-
-    print(
-        "Using direct visual search fallback."
-    )
+        return None
 
 
 # ============================================================
-# 15. EXTRACT AGENT RESPONSE
+# 14. EXTRACT AGENT RESPONSE
 # ============================================================
 
 def extract_agent_text(response):
@@ -738,7 +787,6 @@ def extract_agent_text(response):
         content = (
             response["messages"][-1].content
         )
-
 
         if isinstance(
             content,
@@ -772,16 +820,13 @@ def extract_agent_text(response):
                         block
                     )
 
-
             return "\n".join(
                 text_parts
             )
 
-
         return str(
             content
         )
-
 
     except Exception as e:
 
@@ -791,7 +836,7 @@ def extract_agent_text(response):
 
 
 # ============================================================
-# 16. MAIN TAILORTALK SEARCH
+# 15. MAIN TAILORTALK SEARCH
 # ============================================================
 
 def tailor_talk_search(
@@ -799,19 +844,25 @@ def tailor_talk_search(
     user_message
 ):
 
+    # --------------------------------------------------------
+    # Validate image
+    # --------------------------------------------------------
+
     if not image_path:
 
         return (
             "## ⚠️ Please upload a saree image first."
         )
 
+    # --------------------------------------------------------
+    # Clean user message
+    # --------------------------------------------------------
 
     if not user_message:
 
         user_message = ""
 
     user_message = user_message.strip()
-
 
     if not user_message:
 
@@ -820,12 +871,15 @@ def tailor_talk_search(
             "to this image."
         )
 
-
     # ========================================================
     # GEMINI AGENT
     # ========================================================
 
-    if agent is not None:
+    current_agent = (
+        get_gemini_agent()
+    )
+
+    if current_agent is not None:
 
         prompt = f"""
 The user uploaded a saree image.
@@ -845,10 +899,9 @@ argument.
 Return the catalogue results clearly.
 """
 
-
         try:
 
-            response = agent.invoke({
+            response = current_agent.invoke({
                 "messages": [
                     {
                         "role": "user",
@@ -857,16 +910,16 @@ Return the catalogue results clearly.
                 ]
             })
 
-
             text = extract_agent_text(
                 response
             )
 
-
-            if text and text.strip():
+            if (
+                text
+                and text.strip()
+            ):
 
                 return text
-
 
         except Exception as e:
 
@@ -881,7 +934,6 @@ Return the catalogue results clearly.
             print(
                 "Falling back to direct FAISS search."
             )
-
 
     # ========================================================
     # DIRECT FAISS FALLBACK
@@ -898,8 +950,15 @@ Return the catalogue results clearly.
             results
         )
 
-
     except Exception as e:
+
+        print(
+            "Search failed:"
+        )
+
+        print(
+            str(e)
+        )
 
         return (
             "## ❌ Search Error\n\n"
@@ -908,7 +967,7 @@ Return the catalogue results clearly.
 
 
 # ============================================================
-# 17. GRADIO FRONTEND
+# 16. GRADIO FRONTEND
 # ============================================================
 
 CUSTOM_CSS = """
@@ -933,7 +992,6 @@ with gr.Blocks(
     css=CUSTOM_CSS
 ) as demo:
 
-
     gr.Markdown(
         """
         <div class="tt-title">
@@ -949,11 +1007,10 @@ with gr.Blocks(
         """
     )
 
-
     with gr.Row():
 
         # ----------------------------------------------------
-        # LEFT
+        # LEFT SIDE
         # ----------------------------------------------------
 
         with gr.Column(
@@ -966,7 +1023,6 @@ with gr.Blocks(
                 height=560
             )
 
-
             message_input = gr.Textbox(
                 label="What are you looking for?",
                 placeholder=(
@@ -975,15 +1031,13 @@ with gr.Blocks(
                 lines=2
             )
 
-
             search_button = gr.Button(
                 "🔍 Find Similar Sarees",
                 variant="primary"
             )
 
-
         # ----------------------------------------------------
-        # RIGHT
+        # RIGHT SIDE
         # ----------------------------------------------------
 
         with gr.Column(
@@ -998,7 +1052,6 @@ with gr.Blocks(
                 ),
                 elem_classes="tt-results"
             )
-
 
     # --------------------------------------------------------
     # BUTTON EVENT
@@ -1015,7 +1068,7 @@ with gr.Blocks(
 
 
 # ============================================================
-# 18. LAUNCH
+# 17. LAUNCH
 # ============================================================
 
 if __name__ == "__main__":
@@ -1024,9 +1077,18 @@ if __name__ == "__main__":
         "Starting TailorTalk..."
     )
 
-import os
+    PORT = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
 
-demo.launch(
-    server_name="0.0.0.0",
-    server_port=int(os.environ.get("PORT", 10000))
-)
+    print(
+        f"Starting Gradio on port {PORT}..."
+    )
+
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=PORT
+    )
