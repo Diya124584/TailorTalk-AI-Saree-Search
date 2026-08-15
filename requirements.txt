@@ -6,6 +6,7 @@ pandas
 Pillow
 faiss-cpu
 torch==2.7.1+cpu
+torchvision==0.22.1+cpu
 transformers
 langchain-core
 langchain-google-genai
