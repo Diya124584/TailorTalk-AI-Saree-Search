@@ -1,13 +1,19 @@
---extra-index-url https://download.pytorch.org/whl/cpu
+# TailorTalk - production/runtime dependencies
+# Python 3.11
 
-gradio
-numpy
-pandas
-Pillow
-faiss-cpu
-torch==2.7.1+cpu
-torchvision==0.22.1+cpu
-transformers
-langchain-core
-langchain-google-genai
-langchain
+gradio==6.24.0
+faiss-cpu==1.15.0
+numpy==2.4.6
+pandas==3.0.5
+Pillow==12.3.0
+opencv-python-headless==4.11.0.86
+scikit-image==0.26.0
+scikit-learn==1.8.0
+
+torch==2.13.0
+transformers==5.15.0
+
+langchain==1.3.15
+langchain-google-genai==4.3.4
+google-genai==2.18.1
+requests==2.34.2
