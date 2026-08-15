@@ -941,10 +941,10 @@ Return the catalogue results clearly.
 
     try:
 
-        results = search_similar_sarees(
-            image_path=image_path,
-            top_k=5
-        )
+        results = search_similar_sarees.invoke({
+            "image_path": str(image_path),
+            "top_k": 5
+        })
 
         return format_results(
             results
