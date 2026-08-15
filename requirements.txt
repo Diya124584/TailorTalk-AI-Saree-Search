@@ -7,3 +7,4 @@ torch
 transformers
 langchain-core
 langchain-google-genai
+langchain
