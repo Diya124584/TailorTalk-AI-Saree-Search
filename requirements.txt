@@ -1,0 +1,9 @@
+gradio
+numpy
+pandas
+Pillow
+faiss-cpu
+torch
+transformers
+langchain-core
+langchain-google-genai
