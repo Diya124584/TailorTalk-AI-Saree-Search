@@ -617,7 +617,7 @@ def extract_color_palette(
 
     kmeans = KMeans(
         n_clusters=n_clusters,
-        n_init=5,
+        n_init=1,
         random_state=42,
     )
 
@@ -1094,7 +1094,7 @@ def execute_hybrid_search(
     )
 
     search_k = min(
-        20,
+        8,
         faiss_index.ntotal,
     )
 
